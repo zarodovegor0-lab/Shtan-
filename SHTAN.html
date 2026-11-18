@@ -131,6 +131,15 @@ function questDone(k, n){
   } return false;
 }
 
+/* ---------- ежедневные резервные копии (хранятся 14 дней) ---------- */
+function backupDB(){
+  try {
+    const dir = path.join(DATA, 'backups'); fs.mkdirSync(dir, { recursive:true });
+    const name = 'db-' + new Date().toISOString().slice(0, 10) + '.json', dst = path.join(dir, name);
+    if (fs.existsSync(F.db) && !fs.existsSync(dst)) fs.copyFileSync(F.db, dst);
+    fs.readdirSync(dir).filter(x => /^db-\d{4}-\d\d-\d\d\.json$/.test(x)).sort().slice(0, -14).forEach(x => { try { fs.unlinkSync(path.join(dir, x)); } catch (e) {} });
+  } catch (e) { console.error('backup:', e.message); }
+}
 /* ---------- storage ---------- */
 const readJSON = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { return d; } };
 function atomic(f, obj){ const t = f + '.tmp'; fs.writeFileSync(t, JSON.stringify(obj)); fs.renameSync(t, f); }
@@ -419,6 +428,10 @@ const NICK = /^[\wа-яёА-ЯЁ.-]{3,20}$/;
 const server = http.createServer(async (req, res) => {
   try {
     const p = new URL(req.url, 'http://x').pathname, M = req.method;
+    if (p.startsWith('/api/')) {
+      res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Token'); res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'); res.setHeader('Access-Control-Max-Age', '86400');
+      if (M === 'OPTIONS') { res.writeHead(204); return res.end(); }
+    }
 
     if (M === 'GET' && (p === '/' || p === '/index.html' || p === '/SHTAN.html')) {
       if (!INDEX) { res.writeHead(500); return res.end('index.html not found next to server.js'); }
@@ -813,7 +826,7 @@ const server = http.createServer(async (req, res) => {
     if (!res.headersSent) send(res, e && e.code === 413 ? 413 : 500, { error:'server error' }); else try { res.end(); } catch (x) {}
   }
 });
-server.listen(PORT, () => console.log('SHTAN запущен: http://localhost:' + PORT + '  (данные: ' + DATA + ')'));
+server.listen(PORT, () => { console.log('SHTAN запущен: http://localhost:' + PORT + '  (данные: ' + DATA + ')'); try { const ips = [].concat(...Object.values(require('os').networkInterfaces())).filter(i => i.family === 'IPv4' && !i.internal).map(i => i.address); if (ips.length) console.log('Для других устройств в этой сети: ' + ips.map(a => 'http://' + a + ':' + PORT).join('  ')); } catch (e) {} backupDB(); setTimeout(backupDB, 20000).unref(); setInterval(backupDB, 600000).unref(); });
 /* -->
 <!doctype html>
 <html lang="ru">
@@ -1334,6 +1347,8 @@ input:focus-visible,textarea:focus-visible{outline:0}
 .laist{padding:9px 12px;border-radius:12px;font-size:13px;background:var(--hover)}
 .laist.ok{color:#2e9e5b}.laist.bad{color:var(--muted)}
 .laih{font-size:12px;color:var(--muted);line-height:1.45}
+.srvln{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:6px 10px;margin-top:12px;font-size:12px;color:var(--muted);text-align:center}
+.srvln .lnk{background:none;border:0;color:var(--accent);font-size:12px;padding:0;cursor:pointer;text-decoration:underline}
 .egg{position:fixed;inset:0;z-index:300;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:radial-gradient(circle at 50% 40%,#ffe45a 0%,#f2a20a 45%,#3a1d00 100%);animation:eggin .35s ease-out;overflow:hidden;cursor:pointer}
 @keyframes eggin{from{opacity:0;transform:scale(1.15)}to{opacity:1;transform:none}}
 .egg.troll{background:radial-gradient(circle at 50% 40%,#555 0%,#1a1a1a 55%,#000 100%)}.egg.troll .cap{text-shadow:0 0 12px #fff}.egg.troll .pol img{filter:contrast(1.05)}
@@ -1401,6 +1416,7 @@ body.noanim .egg .pol{animation:none}
     <label class="rem"><input type="checkbox" id="aRem" checked> Запомнить меня на этом устройстве</label>
     <div class="err" id="aErr"></div>
     <button class="btn" id="aGo" type="submit">Войти</button>
+    <div class="srvln" id="srvLn"></div>
   </form>
 </div>
 
@@ -1600,6 +1616,16 @@ async function hashPw(nick, pass){
 const IDB = { db:null };
 const bc = ('BroadcastChannel' in window) ? new BroadcastChannel('shtan_v2') : null;
 let DB = null, ME = null, CUR = null;
+
+const DEFAULT_SERVER = '';
+const normSrv = u => { u = (u || '').trim(); if (!u) return ''; if (!/^https?:\/\//i.test(u)) u = (/^[\w.-]+\.[a-z]{2,}(:\d+)?$/i.test(u) && !/^\d+\.\d+\.\d+\.\d+/.test(u) ? 'https://' : 'http://') + u; return u.replace(/\/+$/, ''); };
+try { const q = new URLSearchParams(location.search).get('server'); if (q) { localStorage.setItem('shtan_srv', q === '-' ? '-' : normSrv(q)); localStorage.removeItem('shtan_tok'); sessionStorage.removeItem('shtan_tok'); const u = new URL(location.href); u.searchParams.delete('server'); history.replaceState(null, '', u.pathname + (u.search || '') + u.hash); } } catch (e) {}
+let API_BASE = (() => { let v = ''; try { v = localStorage.getItem('shtan_srv') || ''; } catch (e) {} if (v === '-') return ''; return normSrv(v || DEFAULT_SERVER); })();
+let SRVFAIL = false;
+if (API_BASE) {
+  const _f = window.fetch.bind(window); window.fetch = (u, o) => _f(typeof u === 'string' && u.startsWith('/api/') ? API_BASE + u : u, o);
+  const _ES = window.EventSource; window.EventSource = function (u, o) { return new _ES(typeof u === 'string' && u.startsWith('/api/') ? API_BASE + u : u, o); };
+}
 let SERVER = false, TOKEN = '', srvRev = 0, SRVPRES = {};
 const emptyDB = () => ({ v:2,
   users:{ [BOT]:{ name:'SHTAN Бот', bio:'Официальный бот SHTAN. Напишите /help', bot:true, created:Date.now() } },
@@ -1631,6 +1657,7 @@ async function dbTx(store, mode){
 const kvGet = async key => { const t = await dbTx('kv'); return new Promise((res, rej) => { const q = t.objectStore('kv').get(key); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); };
 function mutate(fn){ return SERVER ? srvMutate(fn) : localMutate(fn); }
 async function detectServer(){
+  if (API_BASE) { for (let i = 0; i < 2; i++) { try { const r = await fetch('/api/ping', { cache:'no-store' }); const j = await r.json(); if (j && j.shtan) return true; } catch (e) {} await new Promise(r => setTimeout(r, 700)); } SRVFAIL = true; return false; }
   if (location.protocol === 'file:') return false;
   try { const r = await fetch('/api/ping', { cache:'no-store' }); const j = await r.json(); return !!(j && j.shtan); } catch (e) { return false; }
 }
@@ -1684,7 +1711,7 @@ async function putMedia(blob){
 }
 const getMedia = async id => { const t = await dbTx('media'); return new Promise((res, rej) => { const q = t.objectStore('media').get(id); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); };
 function mediaUrl(id){
-  if (SERVER) return Promise.resolve('/api/media/' + id);
+  if (SERVER) return Promise.resolve(API_BASE + '/api/media/' + id);
   if (!urlCache.has(id)) urlCache.set(id, getMedia(id).then(v => {
     const r = !v ? null : (typeof v === 'string' ? v : (v.d || (v instanceof Blob ? URL.createObjectURL(v) : null)));
     if (!r) urlCache.delete(id); return r; }));
@@ -1905,6 +1932,23 @@ function lightbox(url){
 }
 
 
+function renderSrvLine(){
+  const el = $('srvLn'); if (!el) return; el.replaceChildren();
+  const host = API_BASE ? API_BASE.replace(/^https?:\/\//, '') : location.host;
+  el.append(E('span', { text: SERVER ? '🌐 Единый сервер: ' + host : SRVFAIL ? '⚠ Нет связи: ' + host : '📴 Локальный режим — данные только на этом устройстве' }),
+    E('button', { type:'button', class:'lnk', text: SRVFAIL ? 'Изменить' : (SERVER ? 'Сменить' : 'Подключить сервер'), onclick:showSrvDlg }));
+  if (SRVFAIL) el.append(E('button', { type:'button', class:'lnk', text:'Повторить', onclick:() => location.reload() }));
+}
+function showSrvDlg(){
+  const inp = E('input', { class:'fld', placeholder:'https://shtan.example.com или 192.168.1.5:3000', value:API_BASE || '' }), msg = E('div', { class:'laih' });
+  const go = (v, label) => { try { localStorage.setItem('shtan_srv', v); localStorage.removeItem('shtan_tok'); sessionStorage.removeItem('shtan_tok'); } catch (e) {} msg.textContent = label; setTimeout(() => location.reload(), 300); };
+  let md; md = modal('Сервер', E('div', { class:'laibox' },
+    E('div', { class:'laih', text:'Единый сервер хранит аккаунты, чаты и файлы для всех устройств: войдя с любого телефона или компьютера, вы увидите одно и то же. Запустите «node SHTAN.html» на сервере и вставьте его адрес.' }), inp, msg,
+    E('div', { class:'btns wrap' },
+      E('button', { class:'btn', text:'Проверить и подключить', onclick:async () => { const v = normSrv(inp.value); if (!v) { msg.textContent = 'Введите адрес сервера'; return; } msg.textContent = 'Проверяю…';
+        try { const r = await fetch(v + '/api/ping', { cache:'no-store' }); const j = await r.json(); if (!(j && j.shtan)) throw 0; go(v, '✅ Подключено, перезагружаю…'); } catch (e) { msg.textContent = '❌ Не получается подключиться. Проверьте адрес, что сервер запущен, и что адрес начинается с https:// (если страница открыта по https).'; } } }),
+      E('button', { class:'btn ghost', text:'Локальный режим', onclick:() => go('-', 'Переключаю…') }))));
+}
 let mode = 'in';
 function setMode(m){
   mode = m; $('tIn').classList.toggle('on', m === 'in'); $('tUp').classList.toggle('on', m === 'up');
@@ -2595,6 +2639,7 @@ function showSettings(){
     E('div', { class:'sec', text:'⭐ Премиум-статусы (Plus) · 💎 последние 6 — Premium' }), E('div', { class:'sws', id:'stArt', style:'gap:8px' }, Object.keys(STAT).map(k => E('button', { class:'stsw' + (u.status === 'art:' + k ? ' on' : ''), title:STAT[k].n + (PSTAT.includes(k) ? (isPrem(ME) ? ' · Premium' : ' · только Premium') : (isPlus(ME) ? '' : ' · только Plus')), 'data-st':k, onclick:async ev => {
         if (PSTAT.includes(k) ? !isPrem(ME) : !isPlus(ME)) return PSTAT.includes(k) ? showPrem('Этот статус доступен в Shtan Premium') : showPlus('Премиум-статусы доступны в Штанина AI Plus');
         const el = ev.currentTarget; await mutate(d => { d.users[ME].status = 'art:' + k; }); document.querySelectorAll('#stArt .stsw,#stRow button').forEach(x => x.classList.remove('on')); el.classList.add('on'); toast('Статус: ' + STAT[k].n); } }, statEl(k), (PSTAT.includes(k) ? isPrem(ME) : isPlus(ME)) ? null : E('span', { class:'lk', text:'🔒' })))),
+    E('div', { class:'sec', text:'Подключение' }), E('div', { class:'laist ' + (SERVER ? 'ok' : 'bad'), text: SERVER ? '🌐 Единый сервер: ' + (API_BASE ? API_BASE.replace(/^https?:\/\//, '') : location.host) + ' · пользователей: ' + Object.keys(DB.users).length : '📴 Локальный режим: только этот браузер, другие устройства вас не видят. Пользователей здесь: ' + Object.keys(DB.users).length }),
     E('div', { class:'sec', text:'Умная модель (Ollama)' }), laiBox, E('div', { class:'sec', text:'Тема' }), themeSeg, E('div', { class:'sec', text:'Цвет акцента' }), accSw, E('div', { class:'sec', text:'Цвет пузыря сообщений' }), bubSw, E('div', { class:'sec', text:'Форма пузыря' }), shpG, E('div', { class:'sec', text:'Скругление пузырей' }), radR, E('div', { class:'sec', text:'Шрифт' }), ffSel,
     E('div', { class:'sec', text:'Вид' }), toggle('Компактные сообщения', 'compact', applyLook), toggle('Отключить анимации', 'noanim', applyLook),
     E('div', { class:'sec', text:'Звук уведомления' }), E('select', { class:'fld', onchange:ev => { S.tone = ev.target.value; saveS(); beep(); } }, [['', 'Мягкий'], ['ding', 'Звонкий'], ['pop', 'Пузырьки']].map(([v, t]) => E('option', { value:v, text:t, selected:(S.tone || '') === v }))),
@@ -3903,7 +3948,8 @@ document.addEventListener('focusout', () => setTimeout(() => { window.scrollTo(0
   applyLook(); fitVH();
   document.querySelectorAll('[data-ico]').forEach(b => b.replaceChildren(ico(b.dataset.ico)));
   $('regAv').append(ico('camera'));
-  SERVER = await detectServer();
+  SERVER = await detectServer(); renderSrvLine();
+  if (SRVFAIL) { $('auth').hidden = false; $('aGo').disabled = true; $('aErr').textContent = 'Нет связи с сервером. Проверьте интернет и адрес — или нажмите «Изменить» ниже.'; return; }
   try { if (SERVER) { TOKEN = sessionStorage.getItem('shtan_tok') || localStorage.getItem('shtan_tok') || ''; await srvFetch(true); startSSE(); } else { try { IDB.db = await openDB(); } catch (e) { IDB.db = null; } DB = (await kvGet('db')) || emptyDB(); } }
   catch (e) { $('auth').hidden = false; $('aErr').textContent = 'Хранилище браузера недоступно: ' + (e.message || e); return; }
   let s = sessionStorage.getItem(SESS) || localStorage.getItem(REMEM);
