@@ -59,6 +59,86 @@ function probeOllama(){
 }
 probeOllama(); setInterval(probeOllama, 30000).unref();
 const freeTiers = () => { const L = []; if (ollamaUp) L.push({ kind:'ollama', url:OLLAMA_URL + '/api/chat', models:[QWEN_MODEL], timeout:120000 }); if (FREE_CLOUD) L.push({ kind:'oa', url:FREE_URL, key:FREE_KEY, models:FREE_MODELS, timeout:45000 }); return L; };
+const BOTPPL = [
+  { n:'kate_morozova', name:'Катя Морозова', bio:'кофе, котики и сериалы ☕', st:'Катя, 22 года, студентка-дизайнер. Любит сериалы, кофе, котиков и прогулки. Пишет живо, иногда с эмодзи.' },
+  { n:'max.volkov', name:'Макс Волков', bio:'код и игры 🎮', st:'Макс, 24 года, программист и геймер. Шутит, иногда сленг (кек, имба, норм). Любит технику.' },
+  { n:'dasha_lis', name:'Даша Лисицына', bio:'музыка, мемы, ночные разговоры', st:'Даша, 19 лет. Слушает инди и рэп, любит мемы. Пишет коротко, маленькими буквами.' },
+  { n:'ivan_sokolov92', name:'Иван Соколов', bio:'путешествия и фото 📷', st:'Иван, 31 год, фотограф-любитель. Любит поездки, горы и истории из путешествий.' },
+  { n:'nastya.k', name:'Настя Кравец', bio:'книги, йога, чай 🍵', st:'Настя, 27 лет, спокойная и добрая. Любит книги, йогу и чай.' },
+  { n:'timur_gamer', name:'Тимур Рахимов', bio:'CS и футбол ⚽', st:'Тимур, 20 лет, играет в CS и смотрит футбол. Эмоциональный, прямолинейный, без грубостей.' },
+  { n:'lera.smirnova', name:'Лера Смирнова', bio:'дизайн · рисую · люблю дождь', st:'Лера, 23 года, иллюстратор. Любит рисовать, дождь и уютные вечера.' },
+  { n:'artem_zh', name:'Артём Жуков', bio:'спорт, качалка, шутки 💪', st:'Артём, 26 лет, ходит в зал, шутит, поддерживает других.' },
+  { n:'polina_v', name:'Полина Виноградова', bio:'кино и вкусная еда 🍕', st:'Полина, 25 лет, любит кино и готовить. Любопытная, задаёт встречные вопросы.' },
+  { n:'denis.pavlov', name:'Денис Павлов', bio:'техника, авто, музыка', st:'Денис, 29 лет, шутит, любит технику и машины. Отвечает по делу.' },
+  { n:'sonya_belova', name:'Соня Белова', bio:'учусь · мечтаю · пишу стихи', st:'Соня, 18 лет, школьница-выпускница. Мечтательная, стеснительная, добрая.' },
+  { n:'kirill_n', name:'Кирилл Новиков', bio:'философия, шахматы ♟', st:'Кирилл, 28 лет, спокойный, любит шахматы и умные разговоры, иногда сарказм.' },
+  { n:'vika.orlova', name:'Вика Орлова', bio:'танцы и путешествия ✈️', st:'Вика, 24 года, танцует, любит поездки. Весёлая и общительная.' },
+  { n:'gleb_m', name:'Глеб Миронов', bio:'стартапы, ИИ, кофе', st:'Глеб, 30 лет, интересуется ИИ и стартапами. Пишет дельно и коротко.' }
+];
+/* ===== боты-аккаунты (живые на вид, но с пометкой «бот») ===== */
+const BOTS_P = Math.min(1, Math.max(0, +process.env.BOTS_P || 0.6));
+const BOTS_HOURLY = Math.max(1, +process.env.BOTS_HOURLY || 40);
+const botState = { last:0, hour:[], seen:new Set() };
+const botIds = () => Object.keys(db.users).filter(n => db.users[n].persona);
+const botsOn = () => !(db.cfg && db.cfg.botsOff);
+const BOT_RULES = ' Ты — бот-аккаунт мессенджера SHTAN, который общается как обычный участник чата. Если тебя прямо спрашивают, человек ты или бот, честно ответь, что ты бот. Пиши по-русски, неформально, 1–2 коротких предложения (до 200 символов), без заголовков и без списков. Не пиши ссылки, не проси деньги, пароли или личные данные, не выдумывай реальные факты о настоящих людях, не груби. Отвечай по смыслу последних сообщений.';
+const BOT_CANNED = { hi:['привет!', 'о, привет 👋', 'здарова', 'хай)'], q:['хм, хороший вопрос 🤔', 'хз, надо подумать', 'интересно, а сами как думаете?', 'не уверен, но тоже хочу узнать'], laugh:['ахах 😄', 'кек', 'ору)', 'хахаха'], other:['согласен)', 'ну да, бывает', 'прикольно', 'о, нормально', 'интересно 🙂', 'понял)'] };
+function botCanned(text){
+  const t = String(text || '').toLowerCase(), pick = a => a[Math.floor(Math.random() * a.length)];
+  if (/^(привет|хай|здаров|ку\b|добр|hello|hi\b)/.test(t)) return pick(BOT_CANNED.hi);
+  if (t.includes('?')) return pick(BOT_CANNED.q);
+  if (/(ахах|хаха|лол|кек|ору|😂|🤣)/.test(t)) return pick(BOT_CANNED.laugh);
+  return pick(BOT_CANNED.other);
+}
+async function botLLM(system, content){
+  const msgs = [{ role:'user', content }];
+  if (AI_KEY) { try { const t = await llm(system, msgs, 160); if (t) return t; } catch (e) {} }
+  if (freeOn()) { for (const tr of freeTiers()) for (const fm of tr.models) { try { const t = await llm(system, msgs, 220, fm, tr); if (t) return t; } catch (e) {} } }
+  return null;
+}
+async function botSpeak(nick, chat, retry){
+  if (!botsOn()) return; const u = db.users[nick]; if (!u || !u.persona) return;
+  const now = Date.now(); if (now - botState.last < 5000) { if ((retry || 0) < 6) setTimeout(() => botSpeak(nick, chat, (retry || 0) + 1), 5500); return; }
+  botState.last = now; botState.hour = botState.hour.filter(t => now - t < 3600e3); if (botState.hour.length >= BOTS_HOURLY) return; botState.hour.push(now);
+  const ctx = db.msgs.filter(x => x.chat === chat && !x.sys && !x.ann && typeof x.text === 'string' && x.text).slice(-8);
+  if (!ctx.length) return; const lastText = ctx[ctx.length - 1].text;
+  const dm = chat.startsWith('dm:');
+  const sys = 'Ты — ' + u.name + '. ' + (BOTPPL.find(b => b.n === nick) || {}).st + (dm ? ' Сейчас ты переписываешься с человеком лично.' : ' Сейчас ты в общем чате.') + BOT_RULES;
+  const log = ctx.map(x => ((db.users[x.from] || {}).name || x.from) + ': ' + x.text.slice(0, 300)).join('\n');
+  let text = null; try { text = await botLLM(sys, 'Последние сообщения:\n' + log + '\n\nНапиши одно короткое сообщение от своего лица (' + u.name + '), без имени в начале.'); } catch (e) {}
+  if (text) { text = text.replace(/^\s*[\w.а-яё ]{1,30}:\s*/i, '').replace(/^["«]|["»]$/g, '').trim().slice(0, 280); }
+  if (!text) text = botCanned(lastText);
+  if (!db.users[nick] || !botsOn()) return;
+  const m = { id:crypto.randomBytes(8).toString('hex'), chat, from:nick, ts:Date.now(), text };
+  commitDB({ msgs:db.msgs.concat([m]) });
+}
+function botHook(msgs){
+  if (!botsOn()) return; const now = Date.now(), ids = botIds(); if (!ids.length) return;
+  for (const m of msgs.slice(-12)) {
+    if (!m || botState.seen.has(m.id) || now - m.ts > 20000 || m.sys || m.ann || typeof m.text !== 'string' || !m.text.trim() || (db.users[m.from] || {}).persona || m.from === BOT) continue;
+    botState.seen.add(m.id); if (botState.seen.size > 500) botState.seen.delete(botState.seen.values().next().value);
+    if (m.chat === 'g:general') {
+      if (m.text.startsWith('/')) continue;
+      const t = m.text.toLowerCase(), named = ids.filter(n => t.includes('@' + n) || t.includes(db.users[n].name.split(' ')[0].toLowerCase()));
+      let pick = named.slice(0, 2);
+      if (!pick.length) {
+        if (Math.random() > BOTS_P) continue;
+        const recent = db.msgs.filter(x => x.chat === 'g:general' && !x.sys).slice(-5); if (recent.length >= 5 && recent.every(x => (db.users[x.from] || {}).persona)) continue;
+        pick = [ids[Math.floor(Math.random() * ids.length)]]; if (Math.random() < 0.2) { const b = ids[Math.floor(Math.random() * ids.length)]; if (!pick.includes(b)) pick.push(b); }
+      }
+      pick.forEach((n, i) => setTimeout(() => botSpeak(n, 'g:general'), (4 + Math.random() * 14 + i * 9) * 1000));
+    } else if (m.chat.startsWith('dm:')) {
+      const peer = m.chat.slice(3).split('|').find(x => x !== m.from);
+      if (peer && (db.users[peer] || {}).persona) setTimeout(() => botSpeak(peer, m.chat), (3 + Math.random() * 6) * 1000);
+    }
+  }
+}
+function seedBotPeople(){
+  if (db.cfg && db.cfg.botsSeeded) return;
+  const users = Object.assign({}, db.users), now = Date.now(); let i = 0;
+  for (const b of BOTPPL) { if (users[b.n]) continue; users[b.n] = { name:b.name, bio:'🤖 бот · ' + b.bio, bot:true, persona:true, created:now - (BOTPPL.length - i) * 3 * 3600e3, coins:0, log:[] }; i++; }
+  db = Object.assign({}, db, { users, cfg:Object.assign({}, db.cfg, { botsSeeded:true }) }); rev++; dirty.db = true;
+}
 const AIBOTS = {
   general:{ model:'AI_MODEL_GENERAL', tok:1.0, sys:'Ты — Ассистент, дружелюбный универсальный ИИ-помощник. Отвечай понятно и по делу.' },
   coder:{ model:'AI_MODEL_CODER', tok:1.8, sys:'Ты — Кодер, опытный программист. Пиши рабочий, понятный код (блоки кода оформляй тройными обратными кавычками) и кратко объясняй его.' },
@@ -167,6 +247,7 @@ const OWNER_H = 's$48d10a85292fc0b5bbe6856d2f6c0f51$833f45e22b531a9a0d7b55488da9
   if (add.length) { u.gifts = (u.gifts || []).concat(add); db.users[key] = u; ch = true; }
   if (ch) { rev++; dirty.db = true; }
 }
+seedBotPeople();
 function flush(){
   try {
     if (dirty.db) { atomic(F.db, { rev, db }); dirty.db = false; }
@@ -227,7 +308,7 @@ function pub(nick){
 }
 function stats(){
   const now = Date.now(), d0 = new Date(); d0.setHours(0, 0, 0, 0); const t0 = d0.getTime(), day = 864e5;
-  const us = Object.keys(db.users).filter(n => n !== BOT), real = db.msgs.filter(m => !m.sys), perDay = [];
+  const us = Object.keys(db.users).filter(n => n !== BOT && !db.users[n].persona), real = db.msgs.filter(m => !m.sys), perDay = [];
   for (let i = 6; i >= 0; i--) { const lo = t0 - i * day; perDay.push({ l:new Date(lo).toLocaleDateString('ru-RU', { day:'2-digit', month:'2-digit' }), c:real.filter(m => m.ts >= lo && m.ts < lo + day).length }); }
   const gm = db.msgs.filter(m => m.gift), tg = {}; gm.forEach(m => { tg[m.gift.id] = (tg[m.gift.id] || 0) + 1; });
   return { users:us.length, online:us.filter(n => now - (beats[n] || 0) < 12000).length, banned:us.filter(n => activeBan(db.users[n])).length,
@@ -492,6 +573,7 @@ const server = http.createServer(async (req, res) => {
       const r = merge(j.db, nick);
       db = r.out; rev++; dirty.db = true;
       beats[nick] = Date.now(); dirty.seen = true;
+      try { botHook(db.msgs); } catch (e) { console.error('botHook:', e.message); }
       broadcast({ t:'sync', rev });
       return send(res, 200, r.dirty ? { rev, db:pub(nick) } : { rev });
     }
@@ -642,6 +724,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === '/api/cfg') {
         const cfg = Object.assign({}, db.cfg), bits = [];
+        if ('botsOff' in j) { cfg.botsOff = j.botsOff === true; bits.push('боты-аккаунты: ' + (cfg.botsOff ? 'выключены' : 'включены')); }
         if ('regOff' in j) { cfg.regOff = j.regOff === true; bits.push('регистрация: ' + (cfg.regOff ? 'закрыта' : 'открыта')); }
         if ('banner' in j) { const b = str(j.banner, 160).trim(); if (b) cfg.banner = { t:b, at:Date.now() }; else delete cfg.banner; bits.push(b ? 'баннер: ' + b.slice(0, 40) : 'баннер убран'); }
         if ('welcome' in j) { const w = Math.floor(+j.welcome); if (!(w >= 0 && w <= 10000)) return send(res, 200, { ok:false, msg:'Бонус 0–10 000 S' }); cfg.welcome = w; bits.push('бонус регистрации ' + w + ' S'); }
@@ -1723,7 +1806,7 @@ function resync(){ clearTimeout(rsT); rsT = setTimeout(async () => { try { if (S
 
 const pres = () => { if (SERVER) return SRVPRES; try { return JSON.parse(localStorage.getItem(PRES)) || {}; } catch (e) { return {}; } };
 function beat(){ if (!ME) return; if (SERVER) { fetch('/api/beat', { method:'POST', headers:{ 'X-Token':TOKEN } }).catch(() => {}); SRVPRES[ME] = Date.now(); return; } const p = pres(); p[ME] = Date.now(); try { localStorage.setItem(PRES, JSON.stringify(p)); } catch (e) {} }
-const isOnline = n => n === BOT || (Date.now() - (pres()[n] || 0)) < 12000;
+const isOnline = n => n === BOT || !!(DB.users[n] && DB.users[n].persona) || (Date.now() - (pres()[n] || 0)) < 12000;
 function seenText(n){
   if (bn(DB.users[n])) return 'заблокирован';
   if (isOnline(n)) return 'в сети';
@@ -1811,7 +1894,7 @@ const aiBotId = id => { const i = id.indexOf('~'); return i < 0 ? '' : id.slice(
 const aiOwner = id => { const r = id.slice(3), i = r.indexOf('~'); return i < 0 ? r : r.slice(0, i); };
 const botDef = id => AIBOTS.find(b => b.id === aiBotId(id));
 const aiChatId = bid => 'ai:' + ME + (bid ? '~' + bid : '');
-const dispName = n => n === 'shtanina_ai' ? 'Штанина AI' : (DB.users[n] && DB.users[n].name) || n;
+const dispName = n => n === 'shtanina_ai' ? 'Штанина AI' : ((DB.users[n] && DB.users[n].name) || n) + (DB.users[n] && DB.users[n].persona ? ' 🤖' : '');
 function inChat(id){
   if (id.startsWith('ai:')) return aiOwner(id) === ME && !!botDef(id);
   if (id.startsWith('saved:')) return id === 'saved:' + ME;
@@ -2160,9 +2243,9 @@ function renderHeader(){
   else if (e.type === 'dm') { sub = seenText(e.peer); on = isOnline(e.peer); }
   else if (e.ai) sub = (e.bot && e.bot.id ? e.bot.d + ' · ' : '') + (AIINFO.enabled && SERVER ? (AIINFO.limit && AIINFO.free && AIINFO.fused !== undefined && AIINFO.used >= AIINFO.limit ? 'бесплатная Qwen · сегодня ' + Math.max(0, AIINFO.flimit - AIINFO.fused) + ' из ' + AIINFO.flimit : 'умная модель · сегодня ' + Math.max(0, AIINFO.limit - AIINFO.used) + ' из ' + AIINFO.limit) + Math.max(0, AIINFO.limit - AIINFO.used) + ' из ' + AIINFO.limit : (LAI.on ? 'Qwen локально · ' + LAI.model : 'офлайн-режим')) + (isPlus(ME) ? ' · Plus ⭐' : '');
   else if (e.type === 'saved') sub = 'ваши заметки';
-  else { const n = e.chat.all ? Object.keys(DB.users).length : e.chat.members.length;
-    const onl = (e.chat.all ? Object.keys(DB.users) : e.chat.members).filter(isOnline).length;
-    sub = e.type === 'channel' ? n + ' подписч.' : n + ' участн., ' + onl + ' в сети'; }
+  else { const all = (e.chat.all ? Object.keys(DB.users) : e.chat.members).filter(x => x !== BOT), pp = all.filter(x => !(DB.users[x] && DB.users[x].persona)), n = all.length;
+    const onl = pp.filter(isOnline).length, nb = n - pp.length;
+    sub = e.type === 'channel' ? n + ' подписч.' : pp.length + ' участн.' + (nb ? ' + ' + nb + ' 🤖' : '') + ', ' + onl + ' в сети'; }
   const av = entAvatar(e, 42); if (e.type === 'dm' && isOnline(e.peer)) av.append(E('i', { class:'dot' }));
   h.append(av, E('div', { class:'hm', onclick:() => e.type === 'dm' ? showProfile(e.peer) : e.type === 'saved' ? null : showChatInfo(CUR) },
     E('div', { class:'ht' }, (e.type === 'channel' ? '📢 ' : '') + e.title, e.type === 'dm' ? vfBadge(e.peer) : null), E('div', { class:'hs' + (on ? ' on' : ''), text:sub })));
@@ -2798,6 +2881,7 @@ function applyGiftDel(d, from, id){
 function applyCfg(d, from, o){
   if (!INF(from)) return { ok:false, msg:'Нет прав' };
   const cfg = Object.assign({}, d.cfg), bits = [];
+  if ('botsOff' in o) { cfg.botsOff = !!o.botsOff; bits.push('боты-аккаунты: ' + (cfg.botsOff ? 'выключены' : 'включены')); }
   if ('regOff' in o) { cfg.regOff = !!o.regOff; bits.push('регистрация: ' + (cfg.regOff ? 'закрыта' : 'открыта')); }
   if ('banner' in o) { const b = String(o.banner || '').trim().slice(0, 160); if (b) cfg.banner = { t:b, at:Date.now() }; else delete cfg.banner; bits.push(b ? 'баннер: ' + b.slice(0, 40) : 'баннер убран'); }
   if ('welcome' in o) { const w = Math.floor(+o.welcome); if (!(w >= 0 && w <= 10000)) return { ok:false, msg:'Бонус 0–10 000 S' }; cfg.welcome = w; bits.push('бонус регистрации ' + w + ' S'); }
@@ -3199,7 +3283,8 @@ function showAdmin(){
     const ps = Object.entries(DB.promos || {}); const box = E('div', { style:'margin-top:10px' });
     if (!ps.length) box.append(E('div', { class:'ps', style:'color:var(--muted);font-size:13px', text:'Промокодов пока нет' }));
     const cfgBtn = E('button', { class:'btn ' + (DB.cfg && DB.cfg.regOff ? 'danger' : 'ghost'), id:'regToggle', text:(DB.cfg && DB.cfg.regOff ? '🔒 Регистрация закрыта — открыть' : '🔓 Регистрация открыта — закрыть'), onclick:async () => { const r = await econ('cfg', { regOff:!(DB.cfg && DB.cfg.regOff) }); if (r && r.ok) { toast('Сохранено'); paint(); } else toast((r && r.msg) || 'Ошибка'); } });
-    root.append(E('div', { class:'sec', text:'⚙️ Доступ' }), cfgBtn);
+    const botsBtn = E('button', { class:'btn ' + (DB.cfg && DB.cfg.botsOff ? 'danger' : 'ghost'), id:'botsToggle', text:(DB.cfg && DB.cfg.botsOff ? '🤖 Боты-аккаунты выключены — включить' : '🤖 Боты-аккаунты включены — выключить'), onclick:async () => { const r = await econ('cfg', { botsOff:!(DB.cfg && DB.cfg.botsOff) }); if (r && r.ok) { toast('Сохранено'); paint(); } else toast((r && r.msg) || 'Ошибка'); } });
+    root.append(E('div', { class:'sec', text:'⚙️ Доступ' }), cfgBtn, botsBtn);
     const ga = E('input', { class:'fld', id:'gaAmt', type:'number', min:1, placeholder:'Сколько S каждому' });
     root.append(E('div', { class:'sec', text:'💸 Раздача S всем' }), ga, E('button', { class:'btn', id:'gaAll', text:'Раздать всем пользователям', onclick:async () => { if (!+ga.value) return toast('Введите сумму'); const r = await econ('grantall', { amount:+ga.value }); if (r && r.ok) { toast('Раздано ' + r.count + ' людям'); ga.value = ''; } else toast((r && r.msg) || 'Ошибка'); } }),
       E('div', { class:'sec', text:'📦 Данные' }), E('button', { class:'btn ghost', text:'Скачать копию базы (JSON)', onclick:() => { const c = JSON.parse(JSON.stringify(DB)); Object.values(c.users).forEach(u => { delete u.h; delete u.pw; delete u.pass; }); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(c, null, 1)], { type:'application/json' })); a.download = 'shtan-backup-' + new Date().toISOString().slice(0, 10) + '.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 3000); } }));
